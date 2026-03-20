@@ -5,6 +5,7 @@ import type { ProcessInstanceGetResponse } from '@uipath/uipath-typescript/maest
 import type { PaginationCursor } from '@uipath/uipath-typescript/core';
 import { StatusBadge } from './StatusBadge';
 import { InstanceDetail } from './InstanceDetail';
+import { type TimePeriod, getStartDate } from '../utils/timePeriod';
 
 type StatusFilter = 'all' | 'running' | 'faulted';
 
@@ -152,7 +153,7 @@ function FolderGroup({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InstanceList() {
+export function InstanceList({ timePeriod }: { timePeriod: TimePeriod }) {
   const { sdk } = useAuth();
   const processInstances = useMemo(() => new ProcessInstances(sdk), [sdk]);
   const maestroProcesses = useMemo(() => new MaestroProcesses(sdk), [sdk]);
@@ -173,6 +174,8 @@ export function InstanceList() {
   const allFoldersRef = useRef<string[]>([]);
   const [fullItems, setFullItems] = useState<ProcessInstanceGetResponse[]>([]);
   const [isLoadingFull, setIsLoadingFull] = useState(false);
+  const [listKey, setListKey] = useState(0);
+  const prevPeriodRef = useRef(timePeriod);
 
   const fetchPage = useCallback(async (cursor?: PaginationCursor) => {
     setIsLoading(true);
@@ -213,15 +216,24 @@ export function InstanceList() {
 
   useEffect(() => { fetchPage(); }, [fetchPage]);
 
-  // Fetch all instances when a status filter is active
+  // Fetch all instances when a status filter OR time period filter is active
   useEffect(() => {
-    if (statusFilter === 'all' || fullItems.length > 0 || isLoadingFull) return;
+    const needsFull = statusFilter !== 'all' || timePeriod !== 'all';
+    if (!needsFull || fullItems.length > 0 || isLoadingFull) return;
     setIsLoadingFull(true);
     processInstances.getAll()
       .then(result => setFullItems(result.items))
       .catch(() => {})
       .finally(() => setIsLoadingFull(false));
-  }, [statusFilter, fullItems.length, isLoadingFull, processInstances]);
+  }, [statusFilter, timePeriod, fullItems.length, isLoadingFull, processInstances]);
+
+  // Reset visible folders and flash list when time period changes
+  useEffect(() => {
+    if (prevPeriodRef.current === timePeriod) return;
+    prevPeriodRef.current = timePeriod;
+    setOpenFolders(new Set());
+    setListKey(k => k + 1);
+  }, [timePeriod]);
 
   const goToNext = useCallback(async () => {
     if (!nextCursor) return;
@@ -237,20 +249,32 @@ export function InstanceList() {
     await fetchPage(prev);
   }, [prevCursors, fetchPage]);
 
-  // Metrics always computed from the full set (allItems when paginated is enough for the header)
+  const needsFull = statusFilter !== 'all' || timePeriod !== 'all';
+  const baseList = needsFull ? fullItems : allItems;
+  const baseCount = needsFull ? fullItems.length : (totalCount ?? allItems.length);
+
+  const filteredTotal = useMemo(() => {
+    const startDate = getStartDate(timePeriod);
+    const base = needsFull && fullItems.length > 0 ? fullItems : allItems;
+    if (!startDate) return base.length;
+    return base.filter(i => i.startedTime && new Date(i.startedTime) >= startDate).length;
+  }, [fullItems, allItems, timePeriod, needsFull]);
+
+  // Metrics computed from the full set, with time filter applied
   const instanceMetrics = useMemo(() => {
-    const base = statusFilter !== 'all' && fullItems.length > 0 ? fullItems : allItems;
+    const startDate = getStartDate(timePeriod);
+    let base = needsFull && fullItems.length > 0 ? fullItems : allItems;
+    if (startDate) base = base.filter(i => i.startedTime && new Date(i.startedTime) >= startDate);
     return {
       running: base.filter(i => i.latestRunStatus === 'Running').length,
       faulted: base.filter(i => i.latestRunStatus === 'Faulted' || i.latestRunStatus === 'Failed').length,
     };
-  }, [allItems, fullItems, statusFilter]);
-
-  const baseList = statusFilter !== 'all' ? fullItems : allItems;
-  const baseCount = statusFilter !== 'all' ? fullItems.length : (totalCount ?? allItems.length);
+  }, [allItems, fullItems, statusFilter, timePeriod, needsFull]);
 
   const filtered = useMemo(() => {
+    const startDate = getStartDate(timePeriod);
     let list = baseList;
+    if (startDate) list = list.filter(i => i.startedTime && new Date(i.startedTime) >= startDate);
     if (statusFilter === 'running') list = list.filter(i => i.latestRunStatus === 'Running');
     if (statusFilter === 'faulted') list = list.filter(i => i.latestRunStatus === 'Faulted' || i.latestRunStatus === 'Failed');
     if (!search.trim()) return list;
@@ -260,7 +284,7 @@ export function InstanceList() {
       i.processKey?.toLowerCase().includes(q) ||
       i.startedByUser?.toLowerCase().includes(q)
     );
-  }, [baseList, search, statusFilter]);
+  }, [baseList, search, statusFilter, timePeriod]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, ProcessInstanceGetResponse[]>();
@@ -303,7 +327,7 @@ export function InstanceList() {
     <>
       <div className="flex flex-col h-full">
         <InstanceHeader
-          totalCount={baseCount}
+          totalCount={filteredTotal}
           metrics={instanceMetrics}
           statusFilter={statusFilter}
           onStatusFilter={setStatusFilter}
@@ -338,7 +362,7 @@ export function InstanceList() {
         <div className="px-4 py-2 flex items-center justify-between bg-gray-50 shrink-0 border-b border-gray-100">
           <p className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
             {isLoadingFull && <span className="animate-spin inline-block w-3 h-3 border border-gray-300 border-t-gray-500 rounded-full" />}
-            {search || statusFilter !== 'all' ? `${filtered.length} of ` : ''}{baseCount} instances
+            {search || statusFilter !== 'all' ? `${filtered.length} of ` : ''}{filteredTotal} instances
           </p>
           <button
             onClick={() => allCollapsed ? setOpenFolders(new Set(allFoldersRef.current)) : setOpenFolders(new Set())}
@@ -354,7 +378,7 @@ export function InstanceList() {
         </div>
 
         {/* Grouped list */}
-        <div className="flex-1 overflow-y-auto bg-gray-50 pt-2 pb-4">
+        <div key={listKey} className="flex-1 overflow-y-auto bg-gray-50 pt-2 pb-4 animate-[fadeIn_0.2s_ease-out]" style={{ animationFillMode: 'both' }}>
           {isLoadingFull && fullItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
               <div className="animate-spin rounded-full h-7 w-7 border-2 border-gray-200 border-t-green-600" />

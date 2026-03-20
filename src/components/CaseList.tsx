@@ -5,6 +5,7 @@ import type { CaseInstanceGetResponse } from '@uipath/uipath-typescript/cases';
 import type { PaginationCursor } from '@uipath/uipath-typescript/core';
 import { StatusBadge } from './StatusBadge';
 import { CaseDetail } from './CaseDetail';
+import { type TimePeriod, getStartDate } from '../utils/timePeriod';
 
 type StatusFilter = 'all' | 'active' | 'completed';
 
@@ -176,7 +177,7 @@ function CaseTypeGroup({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function CaseList() {
+export function CaseList({ timePeriod }: { timePeriod: TimePeriod }) {
   const { sdk } = useAuth();
   const caseInstances = useMemo(() => new CaseInstances(sdk), [sdk]);
 
@@ -195,6 +196,8 @@ export function CaseList() {
   const allGroupsRef = useRef<string[]>([]);
   const [fullItems, setFullItems] = useState<CaseInstanceGetResponse[]>([]);
   const [isLoadingFull, setIsLoadingFull] = useState(false);
+  const [listKey, setListKey] = useState(0);
+  const prevPeriodRef = useRef(timePeriod);
 
   const fetchPage = useCallback(async (cursor?: PaginationCursor) => {
     setIsLoading(true);
@@ -221,15 +224,24 @@ export function CaseList() {
 
   useEffect(() => { fetchPage(); }, [fetchPage]);
 
-  // Fetch all cases when a status filter is active
+  // Fetch all cases when a status filter OR time period filter is active
   useEffect(() => {
-    if (statusFilter === 'all' || fullItems.length > 0 || isLoadingFull) return;
+    const needsFull = statusFilter !== 'all' || timePeriod !== 'all';
+    if (!needsFull || fullItems.length > 0 || isLoadingFull) return;
     setIsLoadingFull(true);
     caseInstances.getAll()
       .then(result => setFullItems(result.items))
       .catch(() => {})
       .finally(() => setIsLoadingFull(false));
-  }, [statusFilter, fullItems.length, isLoadingFull, caseInstances]);
+  }, [statusFilter, timePeriod, fullItems.length, isLoadingFull, caseInstances]);
+
+  // Reset visible groups and flash list when time period changes
+  useEffect(() => {
+    if (prevPeriodRef.current === timePeriod) return;
+    prevPeriodRef.current = timePeriod;
+    setOpenGroups(new Set());
+    setListKey(k => k + 1);
+  }, [timePeriod]);
 
   const goToNext = useCallback(async () => {
     if (!nextCursor) return;
@@ -245,19 +257,31 @@ export function CaseList() {
     await fetchPage(prev);
   }, [prevCursors, fetchPage]);
 
-  const baseList = statusFilter !== 'all' ? fullItems : allItems;
-  const baseCount = statusFilter !== 'all' ? fullItems.length : (totalCount ?? allItems.length);
+  const needsFull = statusFilter !== 'all' || timePeriod !== 'all';
+  const baseList = needsFull ? fullItems : allItems;
+  const baseCount = needsFull ? fullItems.length : (totalCount ?? allItems.length);
+
+  const filteredTotal = useMemo(() => {
+    const startDate = getStartDate(timePeriod);
+    const base = needsFull && fullItems.length > 0 ? fullItems : allItems;
+    if (!startDate) return base.length;
+    return base.filter(i => i.startedTime && new Date(i.startedTime) >= startDate).length;
+  }, [fullItems, allItems, timePeriod, needsFull]);
 
   const caseMetrics = useMemo(() => {
-    const base = statusFilter !== 'all' && fullItems.length > 0 ? fullItems : allItems;
+    const startDate = getStartDate(timePeriod);
+    let base = needsFull && fullItems.length > 0 ? fullItems : allItems;
+    if (startDate) base = base.filter(i => i.startedTime && new Date(i.startedTime) >= startDate);
     return {
       active: base.filter(i => isActive(i.latestRunStatus)).length,
       completed: base.filter(i => isCompleted(i.latestRunStatus)).length,
     };
-  }, [allItems, fullItems, statusFilter]);
+  }, [allItems, fullItems, statusFilter, timePeriod, needsFull]);
 
   const filtered = useMemo(() => {
+    const startDate = getStartDate(timePeriod);
     let list = baseList;
+    if (startDate) list = list.filter(i => i.startedTime && new Date(i.startedTime) >= startDate);
     if (statusFilter === 'active') list = list.filter(i => isActive(i.latestRunStatus));
     if (statusFilter === 'completed') list = list.filter(i => isCompleted(i.latestRunStatus));
     if (!search.trim()) return list;
@@ -268,7 +292,7 @@ export function CaseList() {
       i.instanceDisplayName?.toLowerCase().includes(q) ||
       i.startedByUser?.toLowerCase().includes(q)
     );
-  }, [baseList, search, statusFilter]);
+  }, [baseList, search, statusFilter, timePeriod]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, CaseInstanceGetResponse[]>();
@@ -311,7 +335,7 @@ export function CaseList() {
     <>
       <div className="flex flex-col h-full">
         <CaseHeader
-          totalCount={baseCount}
+          totalCount={filteredTotal}
           metrics={caseMetrics}
           statusFilter={statusFilter}
           onStatusFilter={setStatusFilter}
@@ -346,7 +370,7 @@ export function CaseList() {
         <div className="px-4 py-2 flex items-center justify-between bg-gray-50 shrink-0 border-b border-gray-100">
           <p className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
             {isLoadingFull && <span className="animate-spin inline-block w-3 h-3 border border-gray-300 border-t-gray-500 rounded-full" />}
-            {search || statusFilter !== 'all' ? `${filtered.length} of ` : ''}{baseCount} cases
+            {search || statusFilter !== 'all' ? `${filtered.length} of ` : ''}{filteredTotal} cases
           </p>
           <button
             onClick={() => allCollapsed ? setOpenGroups(new Set(allGroupsRef.current)) : setOpenGroups(new Set())}
@@ -362,7 +386,7 @@ export function CaseList() {
         </div>
 
         {/* Grouped list */}
-        <div className="flex-1 overflow-y-auto bg-gray-50 pt-2 pb-4">
+        <div key={listKey} className="flex-1 overflow-y-auto bg-gray-50 pt-2 pb-4 animate-[fadeIn_0.2s_ease-out]" style={{ animationFillMode: 'both' }}>
           {isLoadingFull && fullItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
               <div className="animate-spin rounded-full h-7 w-7 border-2 border-gray-200 border-t-orange-500" />

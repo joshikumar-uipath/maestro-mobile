@@ -10,6 +10,7 @@ import type { PaginationCursor } from '@uipath/uipath-typescript/core';
 import { StatusBadge } from './StatusBadge';
 import { ProcessDetail } from './ProcessDetail';
 import { InstanceDetail } from './InstanceDetail';
+import { type TimePeriod, getStartDate } from '../utils/timePeriod';
 
 // ── Type config ───────────────────────────────────────────────────────────────
 
@@ -426,7 +427,7 @@ function FolderSection({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ProcessList() {
+export function ProcessList({ timePeriod }: { timePeriod: TimePeriod }) {
   const { sdk } = useAuth();
   const processes = useMemo(() => new Processes(sdk), [sdk]);
   const maestroProcesses = useMemo(() => new MaestroProcesses(sdk), [sdk]);
@@ -494,6 +495,15 @@ export function ProcessList() {
       .finally(() => setIsLoadingFull(false));
   }, [statusFilter, fullItems.length, isLoadingFull, processes]);
 
+  // Fetch all instances for time-filtered metrics — re-runs when timePeriod changes
+  const [timedInstances, setTimedInstances] = useState<ProcessInstanceGetResponse[]>([]);
+  useEffect(() => {
+    if (timePeriod === 'all') { setTimedInstances([]); return; }
+    processInstances.getAll()
+      .then(result => setTimedInstances(result.items))
+      .catch(() => setTimedInstances([]));
+  }, [timePeriod, processInstances]);
+
   const goToNext = useCallback(async () => {
     if (!nextCursor) return;
     setPrevCursors(prev => currentCursor ? [...prev, currentCursor] : prev);
@@ -510,16 +520,25 @@ export function ProcessList() {
 
   // ── Computed metrics ───────────────────────────────────────────────────────
   const metrics = useMemo(() => {
-    let totalRunning = 0;
-    let totalFaulted = 0;
-    let totalPending = 0;
+    if (timePeriod !== 'all') {
+      const startDate = getStartDate(timePeriod);
+      const inWindow = startDate
+        ? timedInstances.filter(i => i.startedTime && new Date(i.startedTime) >= startDate)
+        : timedInstances;
+      return {
+        totalRunning: inWindow.filter(i => i.latestRunStatus === 'Running').length,
+        totalFaulted: inWindow.filter(i => i.latestRunStatus === 'Faulted' || i.latestRunStatus === 'Failed').length,
+        totalPending: inWindow.filter(i => i.latestRunStatus === 'Pending').length,
+      };
+    }
+    let totalRunning = 0, totalFaulted = 0, totalPending = 0;
     for (const mp of maestroMap.values()) {
       totalRunning += mp.runningCount ?? 0;
       totalFaulted += mp.faultedCount ?? 0;
       totalPending += mp.pendingCount ?? 0;
     }
     return { totalRunning, totalFaulted, totalPending };
-  }, [maestroMap]);
+  }, [maestroMap, timePeriod, timedInstances]);
 
   const typeCounts = useMemo(() => {
     const base = statusFilter !== 'all' ? fullItems : allItems;

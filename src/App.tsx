@@ -6,6 +6,7 @@ import { ProcessList } from './components/ProcessList';
 import { InstanceList } from './components/InstanceList';
 import { CaseList } from './components/CaseList';
 import { TaskList } from './components/TaskList';
+import { TIME_PERIODS, type TimePeriod } from './utils/timePeriod';
 import './index.css';
 
 const authConfig: UiPathSDKConfig = {
@@ -61,9 +62,9 @@ function Drawer({
 }) {
   return (
     <>
-      {open && <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose} />}
+      {open && <div className="absolute inset-0 z-40 bg-black/25" onClick={onClose} />}
       <div
-        className={`fixed top-0 left-0 h-full z-50 w-72 bg-white flex flex-col shadow-2xl transition-transform duration-300 ease-out ${
+        className={`absolute top-0 left-0 h-full z-50 w-72 bg-white flex flex-col shadow-2xl transition-transform duration-300 ease-out ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -142,8 +143,59 @@ function Drawer({
   );
 }
 
+// ── Period filter dropdown ─────────────────────────────────────────────────────
+function PeriodDropdown({
+  current, open, onSelect, onClose,
+}: {
+  current: TimePeriod;
+  open: boolean;
+  onSelect: (p: TimePeriod) => void;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute top-full right-0 mt-2 z-50 w-44 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+        <div className="py-1.5">
+          {TIME_PERIODS.map(p => (
+            <button
+              key={p.key}
+              onClick={() => { onSelect(p.key); onClose(); }}
+              className={`w-full flex items-center justify-between px-4 py-2.5 text-left transition-colors ${
+                p.key === current ? 'bg-indigo-50' : 'hover:bg-gray-50'
+              }`}
+            >
+              <span className={`text-sm font-medium ${p.key === current ? 'text-indigo-600' : 'text-gray-700'}`}>
+                {p.label}
+              </span>
+              {p.key === current && (
+                <svg className="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── TopBar ────────────────────────────────────────────────────────────────────
-function TopBar({ onHamburger }: { onHamburger: () => void }) {
+function TopBar({
+  onHamburger,
+  timePeriod,
+  onTimePeriod,
+  showFilter,
+}: {
+  onHamburger: () => void;
+  timePeriod: TimePeriod;
+  onTimePeriod: (p: TimePeriod) => void;
+  showFilter: boolean;
+}) {
+  const [periodOpen, setPeriodOpen] = useState(false);
+
   return (
     <header className="bg-white border-b border-gray-100 shrink-0 flex items-center px-4 justify-between" style={{ height: '56px' }}>
       <button
@@ -164,11 +216,36 @@ function TopBar({ onHamburger }: { onHamburger: () => void }) {
         <span className="text-sm font-bold text-gray-900">Pulse</span>
       </div>
 
-      <button className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-gray-50 transition-colors relative">
-        <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-        </svg>
-      </button>
+      {showFilter ? (
+        <div className="relative">
+          <button
+            onClick={() => setPeriodOpen(o => !o)}
+            className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-xl"
+          >
+            <svg className="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <span className="text-xs font-semibold text-gray-700">
+              {TIME_PERIODS.find(p => p.key === timePeriod)?.label ?? 'Last 7 days'}
+            </span>
+            <svg
+              className={`w-3 h-3 text-gray-400 transition-transform ${periodOpen ? 'rotate-180' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <PeriodDropdown
+            current={timePeriod}
+            open={periodOpen}
+            onSelect={p => { onTimePeriod(p); setPeriodOpen(false); }}
+            onClose={() => setPeriodOpen(false)}
+          />
+        </div>
+      ) : (
+        <div className="w-9" />
+      )}
     </header>
   );
 }
@@ -212,6 +289,7 @@ function AppContent() {
   const { isAuthenticated, isLoading, login, logout, error, sdk } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('last7d');
 
   if (isLoading) {
     return (
@@ -265,8 +343,13 @@ function AppContent() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 max-w-md mx-auto">
-      <TopBar onHamburger={() => setDrawerOpen(true)} />
+    <div className="flex flex-col h-screen bg-gray-50 max-w-md mx-auto relative overflow-hidden">
+      <TopBar
+        onHamburger={() => setDrawerOpen(true)}
+        timePeriod={timePeriod}
+        onTimePeriod={setTimePeriod}
+        showFilter={activeTab !== 'tasks'}
+      />
 
       <Drawer
         open={drawerOpen}
@@ -279,10 +362,10 @@ function AppContent() {
       />
 
       <main className="flex-1 overflow-hidden">
-        {activeTab === 'home' && <HomeView onNavigate={(tab) => setActiveTab(tab)} />}
-        {activeTab === 'processes' && <ProcessList />}
-        {activeTab === 'agentic' && <InstanceList />}
-        {activeTab === 'cases' && <CaseList />}
+        {activeTab === 'home' && <HomeView onNavigate={(tab) => setActiveTab(tab)} timePeriod={timePeriod} />}
+        {activeTab === 'processes' && <ProcessList timePeriod={timePeriod} />}
+        {activeTab === 'agentic' && <InstanceList timePeriod={timePeriod} />}
+        {activeTab === 'cases' && <CaseList timePeriod={timePeriod} />}
         {activeTab === 'tasks' && <TaskList />}
       </main>
 

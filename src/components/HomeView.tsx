@@ -6,33 +6,7 @@ import { MaestroProcesses, ProcessInstances } from '@uipath/uipath-typescript/ma
 import type { MaestroProcessGetAllResponse, ProcessInstanceGetResponse } from '@uipath/uipath-typescript/maestro-processes';
 import { CaseInstances } from '@uipath/uipath-typescript/cases';
 import type { CaseInstanceGetResponse } from '@uipath/uipath-typescript/cases';
-
-// ── Time filter ────────────────────────────────────────────────────────────────
-const TIME_PERIODS = [
-  { key: 'all',      label: 'All'           },
-  { key: 'lastHour', label: 'Last hour'     },
-  { key: 'today',    label: 'Today'         },
-  { key: 'last24h',  label: 'Last 24 hours' },
-  { key: 'last7d',   label: 'Last 7 days'   },
-  { key: 'last2w',   label: 'Last 2 weeks'  },
-  { key: 'last30d',  label: 'Last 30 days'  },
-  { key: 'last6m',   label: 'Last 6 months' },
-] as const;
-type TimePeriod = typeof TIME_PERIODS[number]['key'];
-
-function getStartDate(period: TimePeriod): Date | null {
-  if (period === 'all') return null;
-  const now = new Date();
-  switch (period) {
-    case 'lastHour': return new Date(now.getTime() - 60 * 60 * 1000);
-    case 'today':    { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
-    case 'last24h':  return new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    case 'last7d':   return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    case 'last2w':   return new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    case 'last30d':  return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    case 'last6m':   return new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
-  }
-}
+import { type TimePeriod, getStartDate } from '../utils/timePeriod';
 
 // ── Type config ────────────────────────────────────────────────────────────────
 type TypeInfo = { label: string };
@@ -286,47 +260,8 @@ function TenantDropdown({
   );
 }
 
-// ── Period dropdown ────────────────────────────────────────────────────────────
-function PeriodDropdown({
-  current, open, onSelect, onClose,
-}: {
-  current: TimePeriod;
-  open: boolean;
-  onSelect: (p: TimePeriod) => void;
-  onClose: () => void;
-}) {
-  if (!open) return null;
-  return (
-    <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div className="absolute top-full right-0 mt-2 z-50 w-44 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-        <div className="py-1.5">
-          {TIME_PERIODS.map(p => (
-            <button
-              key={p.key}
-              onClick={() => { onSelect(p.key); onClose(); }}
-              className={`w-full flex items-center justify-between px-4 py-2.5 text-left transition-colors ${
-                p.key === current ? 'bg-indigo-50' : 'hover:bg-gray-50'
-              }`}
-            >
-              <span className={`text-sm font-medium ${p.key === current ? 'text-indigo-600' : 'text-gray-700'}`}>
-                {p.label}
-              </span>
-              {p.key === current && (
-                <svg className="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
 // ── Main component ─────────────────────────────────────────────────────────────
-export function HomeView({ onNavigate }: { onNavigate: (tab: 'processes' | 'agentic' | 'cases') => void }) {
+export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'processes' | 'agentic' | 'cases') => void; timePeriod: TimePeriod }) {
   const { sdk } = useAuth();
   const processes = useMemo(() => new Processes(sdk), [sdk]);
   const maestroProcesses = useMemo(() => new MaestroProcesses(sdk), [sdk]);
@@ -340,8 +275,6 @@ export function HomeView({ onNavigate }: { onNavigate: (tab: 'processes' | 'agen
   const [caseTotalCount, setCaseTotalCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [tenantOpen, setTenantOpen] = useState(false);
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('last7d');
-  const [periodOpen, setPeriodOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -492,7 +425,7 @@ export function HomeView({ onNavigate }: { onNavigate: (tab: 'processes' | 'agen
   const aiAgentSubColor = agentM.faulted > 0 ? 'text-red-400' : agentM.completed > 0 ? 'text-green-500' : 'text-gray-400';
   const aiAgentGauge = completionGauge(agentM);
 
-  // ── Card 3: Agentic Orchestration — unmatched instances in period ─────────────
+  // ── Card 3: Agentic Process — unmatched instances in period ─────────────
   const orchInstances = useMemo(
     () => filteredInstances.filter(i =>
       !rpaKeys.pkg.has(i.packageId) && !rpaKeys.proc.has(i.processKey) &&
@@ -577,33 +510,6 @@ export function HomeView({ onNavigate }: { onNavigate: (tab: 'processes' | 'agen
               />
             </div>
 
-            {/* Time period filter */}
-            <div className="relative">
-              <button
-                onClick={() => setPeriodOpen(o => !o)}
-                className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-xl"
-              >
-                <svg className="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                <span className="text-xs font-semibold text-gray-700">
-                  {TIME_PERIODS.find(p => p.key === timePeriod)?.label ?? 'Last 7 days'}
-                </span>
-                <svg
-                  className={`w-3 h-3 text-gray-400 transition-transform ${periodOpen ? 'rotate-180' : ''}`}
-                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              <PeriodDropdown
-                current={timePeriod}
-                open={periodOpen}
-                onSelect={setTimePeriod}
-                onClose={() => setPeriodOpen(false)}
-              />
-            </div>
           </div>
         </div>
       </div>
@@ -631,9 +537,9 @@ export function HomeView({ onNavigate }: { onNavigate: (tab: 'processes' | 'agen
           onClick={() => onNavigate('agentic')}
         />
 
-        {/* Card 3: Agentic Orchestration */}
+        {/* Card 3: Agentic Process */}
         <MetricCard
-          category="Agentic Orchestration"
+          category="Agentic Process"
           value={totalJobs}
           sub={orchSub}
           subColor={orchSubColor}

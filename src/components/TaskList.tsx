@@ -17,9 +17,6 @@ function dueOf(task: TaskGetResponse): Date | null {
   return expiry ? new Date(expiry) : null;
 }
 
-function formatDate(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -77,29 +74,38 @@ async function fetchTasks(tasksService: InstanceType<typeof Tasks>): Promise<Tas
 }
 
 // ── Week calendar strip ────────────────────────────────────────────────────────
+// Shows a rolling 7-day window always ending at today — no future dates.
 function WeekCalendar({ selected, onSelect }: { selected: Date | null; onSelect: (d: Date) => void }) {
-  const [weekStart, setWeekStart] = useState(() => {
-    const now = new Date();
-    const diff = now.getDay() === 0 ? -6 : 1 - now.getDay();
-    const mon = new Date(now);
-    mon.setDate(now.getDate() + diff);
-    mon.setHours(0, 0, 0, 0);
-    return mon;
+  const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+
+  // windowEnd is capped at today; default window = [today-6 .. today]
+  const [windowEnd, setWindowEnd] = useState(() => today);
+
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(windowEnd);
+    d.setDate(windowEnd.getDate() - 6 + i);
+    return d;
   });
 
-  const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart); d.setDate(weekStart.getDate() + i); return d;
+  const canGoForward = windowEnd.getTime() < today.getTime();
+
+  const goBack = () => setWindowEnd(e => {
+    const d = new Date(e); d.setDate(d.getDate() - 7); return d;
   });
-  const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const goForward = () => setWindowEnd(e => {
+    const d = new Date(e);
+    d.setDate(d.getDate() + 7);
+    // Never go past today
+    return d.getTime() > today.getTime() ? today : d;
+  });
+
+  // Show month of the last day in the window
+  const monthLabel = days[6].toLocaleDateString('en-US', { month: 'long' });
 
   return (
     <div className="bg-white border-b border-gray-100 px-4 pt-3 pb-4 shrink-0">
       <div className="flex items-center justify-between mb-3">
-        <button
-          onClick={() => setWeekStart(w => { const d = new Date(w); d.setDate(d.getDate() - 7); return d; })}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50"
-        >
+        <button onClick={goBack} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50">
           <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
@@ -109,13 +115,12 @@ function WeekCalendar({ selected, onSelect }: { selected: Date | null; onSelect:
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
               d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
-          <span className="text-sm font-semibold text-gray-700">
-            {weekStart.toLocaleDateString('en-US', { month: 'long' })}
-          </span>
+          <span className="text-sm font-semibold text-gray-700">{monthLabel}</span>
         </div>
         <button
-          onClick={() => setWeekStart(w => { const d = new Date(w); d.setDate(d.getDate() + 7); return d; })}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50"
+          onClick={goForward}
+          disabled={!canGoForward}
+          className={`w-8 h-8 flex items-center justify-center rounded-lg transition-opacity ${canGoForward ? 'hover:bg-gray-50' : 'opacity-20 cursor-default'}`}
         >
           <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -127,9 +132,10 @@ function WeekCalendar({ selected, onSelect }: { selected: Date | null; onSelect:
         {days.map((d, i) => {
           const isToday = d.getTime() === today.getTime();
           const isSelected = selected !== null && d.toDateString() === selected.toDateString();
+          const dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' });
           return (
             <button key={i} onClick={() => onSelect(d)} className="flex-1 flex flex-col items-center gap-1.5 py-1">
-              <span className="text-[10px] text-gray-400 font-medium">{DAY_LABELS[i]}</span>
+              <span className="text-[10px] text-gray-400 font-medium">{dayLabel}</span>
               <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors
                 ${isSelected ? 'bg-blue-500 text-white' : isToday ? 'text-blue-500' : 'text-gray-700'}`}>
                 {d.getDate()}
@@ -142,86 +148,11 @@ function WeekCalendar({ selected, onSelect }: { selected: Date | null; onSelect:
   );
 }
 
-// ── Task card ─────────────────────────────────────────────────────────────────
-function TaskCard({ task }: { task: TaskGetResponse }) {
-  const p = PRIORITY[task.priority] ?? PRIORITY[TaskPriority.Low];
-  const due = dueOf(task);
-  const isOverdue = due && due < new Date() && !task.isCompleted;
-  const assigneeName = task.assignedToUser?.name
-    ?? task.assignedToUser?.displayName
-    ?? task.taskAssigneeName
-    ?? null;
-
-  return (
-    <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-50">
-      {/* Priority + menu */}
-      <div className="flex items-center justify-between mb-3">
-        <span className={`text-xs font-bold px-3 py-1 rounded-full ${p.bg} ${p.text}`}>{p.label}</span>
-        <svg className="w-4 h-4 text-gray-300" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 7a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 7a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
-        </svg>
-      </div>
-
-      {/* Title */}
-      <p className="text-[15px] font-bold text-gray-900 leading-snug mb-1">{task.title}</p>
-
-      {/* Subtitle from action label or type */}
-      <p className="text-sm text-gray-400 leading-snug mb-3 line-clamp-2">
-        {task.actionLabel || task.action || task.type.replace('Task', '') + ' · Action Center'}
-      </p>
-
-      {/* Footer chips */}
-      <div className="flex items-center flex-wrap gap-2">
-        {/* Due date */}
-        {due && (
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg ${isOverdue ? 'bg-red-50' : 'bg-gray-50'}`}>
-            <svg className={`w-3 h-3 ${isOverdue ? 'text-red-400' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            <span className={`text-xs font-medium ${isOverdue ? 'text-red-500' : 'text-gray-500'}`}>
-              {formatDate(due)}
-            </span>
-          </div>
-        )}
-
-        {/* Status */}
-        <div className="flex items-center gap-1.5 bg-gray-50 px-2.5 py-1 rounded-lg">
-          <span className={`w-1.5 h-1.5 rounded-full inline-block ${
-            task.status === TaskStatus.Pending ? 'bg-blue-400' : 'bg-amber-400'
-          }`} />
-          <span className="text-xs text-gray-500 font-medium">{task.status}</span>
-        </div>
-
-        {/* Assignee */}
-        {assigneeName && (
-          <div className="flex items-center gap-1.5 bg-gray-50 px-2.5 py-1 rounded-lg">
-            <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-            </svg>
-            <span className="text-xs text-gray-500 font-medium truncate max-w-[100px]">{assigneeName}</span>
-          </div>
-        )}
-
-        {/* Created time */}
-        <div className="flex items-center gap-1.5 bg-gray-50 px-2.5 py-1 rounded-lg ml-auto">
-          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span className="text-xs text-gray-400 font-medium">{timeAgo(task.createdTime)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Compact task card (used in date section) ──────────────────────────────────
-function CompactTaskCard({ task, onOpen }: { task: TaskGetResponse; onOpen: () => void }) {
+function CompactTaskCard({ task, onOpen, completed }: { task: TaskGetResponse; onOpen: () => void; completed?: boolean }) {
   const p = PRIORITY[task.priority] ?? PRIORITY[TaskPriority.Low];
   const due = dueOf(task);
-  const isOverdue = due && due < new Date();
+  const isOverdue = due && due < new Date() && !completed;
   const assigneeName = task.assignedToUser?.name
     ?? task.assignedToUser?.displayName
     ?? task.taskAssigneeName
@@ -230,21 +161,32 @@ function CompactTaskCard({ task, onOpen }: { task: TaskGetResponse; onOpen: () =
   return (
     <button
       onClick={onOpen}
-      className="w-full bg-white rounded-xl px-3.5 py-3 shadow-sm border border-gray-50 flex items-center gap-3 text-left active:bg-gray-50 transition-colors"
+      className={`w-full rounded-xl px-3.5 py-3 shadow-sm border flex items-center gap-3 text-left active:bg-gray-50 transition-colors ${
+        completed ? 'bg-green-50 border-green-100' : 'bg-white border-gray-50'
+      }`}
     >
-      {/* Priority dot */}
-      <div className="w-2 h-2 rounded-full shrink-0"
-        style={{ background: p.text.includes('red') ? '#f87171' : p.text.includes('orange') ? '#fb923c' : p.text.includes('amber') ? '#fbbf24' : '#9ca3af' }} />
+      {/* Done check or priority dot */}
+      {completed ? (
+        <svg className="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+        </svg>
+      ) : (
+        <div className="w-2 h-2 rounded-full shrink-0"
+          style={{ background: p.text.includes('red') ? '#f87171' : p.text.includes('orange') ? '#fb923c' : p.text.includes('amber') ? '#fbbf24' : '#9ca3af' }} />
+      )}
       {/* Title + subtitle */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-gray-900 truncate">{task.title}</p>
+        <p className={`text-sm font-semibold truncate ${completed ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{task.title}</p>
         <p className="text-xs text-gray-400 truncate mt-0.5">{assigneeName} · {timeAgo(task.createdTime)}</p>
       </div>
-      {/* Priority badge */}
-      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.bg} ${p.text}`}>{p.label}</span>
-      {/* Overdue indicator */}
-      {isOverdue && (
-        <div className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+      {/* Priority badge or Completed badge */}
+      {completed ? (
+        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 bg-green-100 text-green-600">Done</span>
+      ) : (
+        <>
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${p.bg} ${p.text}`}>{p.label}</span>
+          {isOverdue && <div className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
+        </>
       )}
     </button>
   );
@@ -540,6 +482,7 @@ export function TaskList() {
   const tasksService = useMemo(() => new Tasks(sdk), [sdk]);
 
   const [allTasks, setAllTasks] = useState<TaskGetResponse[]>([]);
+  const [completedTasks, setCompletedTasks] = useState<TaskGetResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -570,6 +513,7 @@ export function TaskList() {
       .then(items => {
         if (cancelled) return;
         setAllTasks(items.filter(t => t.status !== TaskStatus.Completed));
+        setCompletedTasks(items.filter(t => t.status === TaskStatus.Completed));
       })
       .catch(err => {
         if (cancelled) return;
@@ -598,7 +542,13 @@ export function TaskList() {
     );
   }, [allSorted, filterDate]);
 
-  const totalPending = allTasks.length;
+  // Completed tasks for the selected date
+  const completedDateTasks = useMemo(() => {
+    if (!filterDate) return [];
+    return completedTasks.filter(t =>
+      new Date(t.createdTime).toDateString() === filterDate.toDateString()
+    ).sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime());
+  }, [completedTasks, filterDate]);
 
   return (
     <div className="flex flex-col h-full bg-[#f7f7f7] relative">
@@ -724,27 +674,35 @@ export function TaskList() {
         ) : (
           <div className="px-4 pt-3 pb-4 flex flex-col gap-3">
 
-            {/* ── Date section (top) — compact cards when a date is selected */}
-            {filterDate && dateTasks.length > 0 && (
+            {/* ── Date section (top) — only when selected date has tasks */}
+            {filterDate && (dateTasks.length > 0 || completedDateTasks.length > 0) && (
               <>
                 <div className="flex items-center gap-2 px-1">
                   <p className="text-xs font-bold text-gray-700">
                     {filterDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
                   </p>
-                  <span className="text-[11px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">
-                    {dateTasks.length}
-                  </span>
+                  {dateTasks.length > 0 && (
+                    <span className="text-[11px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">
+                      {dateTasks.length} pending
+                    </span>
+                  )}
+                  {completedDateTasks.length > 0 && (
+                    <span className="text-[11px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
+                      {completedDateTasks.length} done
+                    </span>
+                  )}
                 </div>
                 {dateTasks.map(t => <CompactTaskCard key={`d-${t.id}`} task={t} onOpen={() => window.open(actionCenterTaskUrl(sdk.config.baseUrl ?? '', sdk.config.orgName ?? '', sdk.config.tenantName ?? '', t.id), '_blank')} />)}
-
-                {/* Divider */}
-                <div className="flex items-center gap-3 py-1">
-                  <div className="flex-1 h-px bg-gray-200" />
-                  <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">All Tasks</span>
-                  <div className="flex-1 h-px bg-gray-200" />
-                </div>
+                {completedDateTasks.map(t => <CompactTaskCard key={`c-${t.id}`} task={t} completed onOpen={() => window.open(actionCenterTaskUrl(sdk.config.baseUrl ?? '', sdk.config.orgName ?? '', sdk.config.tenantName ?? '', t.id), '_blank')} />)}
               </>
             )}
+
+            {/* ── All Tasks header — always shown */}
+            <div className="flex items-center gap-3 py-1">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">All Tasks</span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
 
             {/* ── All tasks (always shown below) */}
             {allSorted.map(t => <CompactTaskCard key={t.id} task={t} onOpen={() => window.open(actionCenterTaskUrl(sdk.config.baseUrl ?? '', sdk.config.orgName ?? '', sdk.config.tenantName ?? '', t.id), '_blank')} />)}
