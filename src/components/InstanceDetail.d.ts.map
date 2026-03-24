@@ -1,1 +1,0 @@
-{"version":3,"file":"InstanceDetail.d.ts","sourceRoot":"","sources":["InstanceDetail.tsx"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,0BAA0B,EAA2C,MAAM,6CAA6C,CAAC;AAGvI,UAAU,mBAAmB;IAC3B,QAAQ,EAAE,0BAA0B,CAAC;IACrC,OAAO,EAAE,MAAM,IAAI,CAAC;CACrB;AA8BD,wBAAgB,cAAc,CAAC,EAAE,QAAQ,EAAE,OAAO,EAAE,EAAE,mBAAmB,2CAoNxE"}

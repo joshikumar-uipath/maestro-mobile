@@ -8,6 +8,19 @@ import { CaseInstances } from '@uipath/uipath-typescript/cases';
 import type { CaseInstanceGetResponse } from '@uipath/uipath-typescript/cases';
 import { type TimePeriod, getStartDate } from '../utils/timePeriod';
 
+// ── Jobs API types ─────────────────────────────────────────────────────────────
+interface OrchestratorJob {
+  Id: number;
+  State: string; // Pending | Running | Stopping | Faulted | Successful | Stopped | Suspended
+  StartTime: string | null;
+  EndTime: string | null;
+  PackageType?: string;        // Process | Agent | etc. — direct field on job
+  ReleaseId?: number;
+  Release?: { Id: number };
+  ReleaseName?: string;
+  OrganizationUnitId?: number;
+}
+
 // ── Type config ────────────────────────────────────────────────────────────────
 type TypeInfo = { label: string };
 const TYPE_INFO: Partial<Record<PackageType, TypeInfo>> = {
@@ -273,6 +286,7 @@ export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'proces
   const [allInstances, setAllInstances] = useState<ProcessInstanceGetResponse[]>([]);
   const [caseItems, setCaseItems] = useState<CaseInstanceGetResponse[]>([]);
   const [caseTotalCount, setCaseTotalCount] = useState<number>(0);
+  const [allJobs, setAllJobs] = useState<OrchestratorJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [tenantOpen, setTenantOpen] = useState(false);
 
@@ -281,9 +295,11 @@ export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'proces
 
     processes.getAll({ pageSize: 100 }).then(r => {
       if (cancelled) return;
+      const items = 'items' in r ? r.items : Array.isArray(r) ? r : [];
+      console.log('[Processes] count:', items.length, 'types:', [...new Set(items.map((p: ProcessGetResponse) => p.packageType))], 'sample id:', items[0]?.id, 'folderId:', items[0]?.folderId);
       if ('items' in r) setAllProcesses(r.items);
       else if (Array.isArray(r)) setAllProcesses(r);
-    }).catch(() => {}).finally(() => { if (!cancelled) setIsLoading(false); });
+    }).catch((err) => console.error('[Processes] FAILED:', err)).finally(() => { if (!cancelled) setIsLoading(false); });
 
     maestroProcesses.getAll().then(r => {
       if (cancelled) return;
@@ -310,8 +326,87 @@ export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'proces
     return () => { cancelled = true; };
   }, [processes, maestroProcesses, processInstances, caseInstances]);
 
+  // Fetch Jobs — try without folder header first (cross-folder), then per-folder if empty
+  useEffect(() => {
+    const token = sdk.getToken();
+    if (!token) return;
+    const { baseUrl, orgName, tenantName } = sdk.config;
+    let cancelled = false;
+
+    const fetchJobs = (extraHeaders: Record<string, string> = {}) =>
+      fetch(`${baseUrl}/${orgName}/${tenantName}/orchestrator_/odata/Jobs?$top=500&$orderby=StartTime desc`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...extraHeaders },
+      }).then(r => r.json());
+
+    // Step 1: try cross-folder (no folder header)
+    fetchJobs()
+      .then(data => {
+        console.log('[Jobs API] cross-folder status, count:', data.value?.length, 'error:', data.message ?? data['@odata.error']?.message?.value, 'sample:', JSON.stringify(data.value?.[0]));
+        if (!cancelled && data.value?.length > 0) {
+          setAllJobs(data.value);
+        } else if (!cancelled && allInstances.length > 0) {
+          // Step 2: fall back to per-folder using folderKey from instances
+          const folderKeys = [...new Set(allInstances.map((i) => i.folderKey).filter(Boolean))];
+          console.log('[Jobs API] falling back to per-folder, keys:', folderKeys);
+          Promise.all(folderKeys.map(key =>
+            fetchJobs({ 'X-UIPATH-FolderKey': key })
+              .then((d): OrchestratorJob[] => { console.log('[Jobs API] folder', key, 'count:', d.value?.length, 'err:', d.message); return d.value ?? []; })
+              .catch(() => [] as OrchestratorJob[])
+          )).then(results => { if (!cancelled) setAllJobs(results.flat()); });
+        }
+      })
+      .catch(err => console.error('[Jobs API] error:', err));
+
+    return () => { cancelled = true; };
+  }, [sdk, allInstances]);
+
   // ── Time filter ──────────────────────────────────────────────────────────────
   const startDate = useMemo(() => getStartDate(timePeriod), [timePeriod]);
+
+  // Map process id → packageType for categorising jobs
+  const processTypeMap = useMemo(() => {
+    const map = new Map<number, PackageType>();
+    for (const p of allProcesses) {
+      if (p.id != null && p.packageType) map.set(p.id, p.packageType);
+    }
+    console.log('[processTypeMap] size:', map.size, 'entries:', [...map.entries()].slice(0, 3));
+    return map;
+  }, [allProcesses]);
+
+  // Time-filtered jobs
+  const filteredJobs = useMemo(() => {
+    if (!startDate) return allJobs;
+    return allJobs.filter(j => j.StartTime && new Date(j.StartTime) >= startDate);
+  }, [allJobs, startDate]);
+
+  const rpaJobs = useMemo(() => {
+    const jobs = filteredJobs.filter(j => {
+      if (j.PackageType) return j.PackageType === 'Process';
+      const rid = j.ReleaseId ?? j.Release?.Id;
+      return rid != null && processTypeMap.get(rid) === PackageType.Process;
+    });
+    console.log('[rpaJobs] total filtered:', filteredJobs.length, 'rpa:', jobs.length, 'samplePkgType:', filteredJobs[0]?.PackageType);
+    return jobs;
+  }, [filteredJobs, processTypeMap]);
+
+  const agentJobs = useMemo(() => {
+    const jobs = filteredJobs.filter(j => {
+      if (j.PackageType) return j.PackageType === 'Agent';
+      const rid = j.ReleaseId ?? j.Release?.Id;
+      return rid != null && processTypeMap.get(rid) === PackageType.Agent;
+    });
+    console.log('[agentJobs] agent:', jobs.length);
+    return jobs;
+  }, [filteredJobs, processTypeMap]);
+
+  function jobMetrics(jobs: OrchestratorJob[]) {
+    const completed = jobs.filter(j => j.State === 'Successful' || j.State === 'Stopped').length;
+    const running   = jobs.filter(j => j.State === 'Running' || j.State === 'Pending' || j.State === 'Resuming').length;
+    const faulted   = jobs.filter(j => j.State === 'Faulted').length;
+    const total     = jobs.length;
+    const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return { total, completed, running, faulted, completionPct };
+  }
 
   const filteredInstances = useMemo(() => {
     if (!startDate) return allInstances;
@@ -350,54 +445,16 @@ export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'proces
       .sort((a, b) => b.count - a.count);
   }, [allProcesses]);
 
-  const rpaProcesses = useMemo(
-    () => allProcesses.filter(p => p.packageType === PackageType.Process),
-    [allProcesses]
-  );
-  const agentProcesses = useMemo(
-    () => allProcesses.filter(p => p.packageType === PackageType.Agent),
-    [allProcesses]
-  );
-
-  // Build lookup sets for matching instances to their package type.
-  // ProcessGetResponse.packageKey ↔ ProcessInstanceGetResponse.packageId
-  // ProcessGetResponse.key        ↔ ProcessInstanceGetResponse.processKey
-  const rpaKeys = useMemo(() => ({
-    pkg: new Set(rpaProcesses.map(p => p.packageKey)),
-    proc: new Set(rpaProcesses.map(p => p.key)),
-  }), [rpaProcesses]);
-  const agentKeys = useMemo(() => ({
-    pkg: new Set(agentProcesses.map(p => p.packageKey)),
-    proc: new Set(agentProcesses.map(p => p.key)),
-  }), [agentProcesses]);
-
-  const rpaInstances = useMemo(
-    () => filteredInstances.filter(i =>
-      rpaKeys.pkg.has(i.packageId) || rpaKeys.proc.has(i.processKey)
-    ),
-    [filteredInstances, rpaKeys]
-  );
-  const agentInstances = useMemo(
-    () => filteredInstances.filter(i =>
-      agentKeys.pkg.has(i.packageId) || agentKeys.proc.has(i.processKey)
-    ),
-    [filteredInstances, agentKeys]
-  );
-
-  // ── Helper: compute completion-rate metrics from an instance array ───────────
-  // Completion rate = completedInstances / totalInstances × 100
-  // "Completed" covers all terminal-success statuses across Maestro and cases
+  // ── Helper: completion-rate metrics from instances (used for Agentic Process card) ──
   const DONE_STATUSES = new Set(['Completed', 'Successful', 'Succeeded', 'Closed', 'Resolved', 'Finished']);
 
   function instanceMetrics(instances: typeof filteredInstances) {
     const completed = instances.filter(i => DONE_STATUSES.has(i.latestRunStatus)).length;
     const running   = instances.filter(i => i.latestRunStatus === 'Running').length;
     const faulted   = instances.filter(i => i.latestRunStatus === 'Faulted' || i.latestRunStatus === 'Failed').length;
-    const pending   = instances.filter(i => i.latestRunStatus === 'Pending' || i.latestRunStatus === 'Queued').length;
     const total     = instances.length;
-    // Completion rate: completed / total (0 when no data)
     const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
-    return { total, completed, running, faulted, pending, completionPct };
+    return { total, completed, running, faulted, completionPct };
   }
 
   function completionGauge(m: ReturnType<typeof instanceMetrics>) {
@@ -409,30 +466,32 @@ export function HomeView({ onNavigate, timePeriod }: { onNavigate: (tab: 'proces
     };
   }
 
-  // ── Card 1: Automations (RPA) ─────────────────────────────────────────────────
-  const rpaM = instanceMetrics(rpaInstances);
+  // ── Card 1: Automations (RPA) — from Jobs API ─────────────────────────────────
+  const rpaM = jobMetrics(rpaJobs);
   const rpaSub = rpaM.total > 0
     ? `${rpaM.completed} done · ${rpaM.running} running · ${rpaM.faulted} faulted`
     : 'No RPA runs in period';
   const rpaSubColor = rpaM.faulted > 0 ? 'text-red-400' : rpaM.completed > 0 ? 'text-green-500' : 'text-gray-400';
-  const rpaGauge = completionGauge(rpaM);
+  const rpaGauge = {
+    value: rpaM.total > 0 ? `${rpaM.completionPct}%` : '—',
+    badge: rpaM.total === 0 ? 'No data' : rpaM.completionPct >= 80 ? 'Efficient' : rpaM.completionPct >= 50 ? 'Moderate' : 'Low',
+    activeSegments: rpaM.total > 0 ? Math.max(1, Math.round((rpaM.completionPct / 100) * 14)) : 1,
+  };
 
-  // ── Card 2: AI Agents ─────────────────────────────────────────────────────────
-  const agentM = instanceMetrics(agentInstances);
+  // ── Card 2: AI Agents — from Jobs API ────────────────────────────────────────
+  const agentM = jobMetrics(agentJobs);
   const aiAgentSub = agentM.total > 0
     ? `${agentM.completed} done · ${agentM.running} running · ${agentM.faulted} faulted`
     : 'No agent runs in period';
   const aiAgentSubColor = agentM.faulted > 0 ? 'text-red-400' : agentM.completed > 0 ? 'text-green-500' : 'text-gray-400';
-  const aiAgentGauge = completionGauge(agentM);
+  const aiAgentGauge = {
+    value: agentM.total > 0 ? `${agentM.completionPct}%` : '—',
+    badge: agentM.total === 0 ? 'No data' : agentM.completionPct >= 80 ? 'Efficient' : agentM.completionPct >= 50 ? 'Moderate' : 'Low',
+    activeSegments: agentM.total > 0 ? Math.max(1, Math.round((agentM.completionPct / 100) * 14)) : 1,
+  };
 
-  // ── Card 3: Agentic Process — unmatched instances in period ─────────────
-  const orchInstances = useMemo(
-    () => filteredInstances.filter(i =>
-      !rpaKeys.pkg.has(i.packageId) && !rpaKeys.proc.has(i.processKey) &&
-      !agentKeys.pkg.has(i.packageId) && !agentKeys.proc.has(i.processKey)
-    ),
-    [filteredInstances, rpaKeys, agentKeys]
-  );
+  // ── Card 3: Agentic Process — all Maestro process instances in period ───────
+  const orchInstances = filteredInstances;
   const orchM = instanceMetrics(orchInstances);
   const totalJobs = orchM.total;
   const orchSub = totalJobs > 0

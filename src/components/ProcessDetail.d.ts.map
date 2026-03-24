@@ -1,1 +1,0 @@
-{"version":3,"file":"ProcessDetail.d.ts","sourceRoot":"","sources":["ProcessDetail.tsx"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,kBAAkB,EAAE,MAAM,qCAAqC,CAAC;AAE9E,UAAU,kBAAkB;IAC1B,OAAO,EAAE,kBAAkB,CAAC;IAC5B,OAAO,EAAE,MAAM,IAAI,CAAC;CACrB;AAYD,wBAAgB,aAAa,CAAC,EAAE,OAAO,EAAE,OAAO,EAAE,EAAE,kBAAkB,2CAmCrE"}
